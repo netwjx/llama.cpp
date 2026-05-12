@@ -136,6 +136,13 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     res->use_fusion      = getenv("GGML_METAL_FUSION_DISABLE") == nil;
     res->use_concurrency = getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil;
 
+    // Older discrete GPUs (no unified memory and no simdgroup MM support) can
+    // produce incorrect results when command encoding concurrency is enabled.
+    if (res->use_concurrency && !props_dev->has_unified_memory && !props_dev->has_simdgroup_mm) {
+        res->use_concurrency = false;
+        GGML_LOG_WARN("%s: disabling concurrency on legacy discrete GPU to avoid incorrect results\n", __func__);
+    }
+
     {
         const char * val = getenv("GGML_METAL_GRAPH_DEBUG");
         res->debug_graph = val ? atoi(val) : 0;
