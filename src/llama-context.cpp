@@ -17,6 +17,35 @@
 #include <limits>
 #include <stdexcept>
 
+static bool llama_is_vulkan_amd_device(ggml_backend_dev_t device) {
+    if (device == nullptr) {
+        return false;
+    }
+
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
+    const char * reg_name = reg ? ggml_backend_reg_name(reg) : nullptr;
+    if (reg_name == nullptr || strcmp(reg_name, "Vulkan") != 0) {
+        return false;
+    }
+
+    ggml_backend_dev_props props = {};
+    ggml_backend_dev_get_props(device, &props);
+    const char * desc = props.description;
+
+    // Vulkan backend on macOS is provided through MoltenVK.
+    return desc != nullptr && (strstr(desc, "Radeon") != nullptr || strstr(desc, "AMD") != nullptr);
+}
+
+static bool llama_has_vulkan_amd_offload(const llama_model & model) {
+    for (uint32_t il = 0; il < model.hparams.n_layer; ++il) {
+        if (llama_is_vulkan_amd_device(model.dev_layer(il))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 //
 // llama_context
 //
@@ -465,6 +494,17 @@ void llama_context::sched_reserve() {
 
         cparams.auto_fa = false;
     }
+    
+#if defined(__APPLE__)
+    if (cparams.auto_fgdn) {
+        if (llama_has_vulkan_amd_offload(model)) {
+            cparams.fused_gdn_ar = false;
+            cparams.fused_gdn_ch = false;
+            cparams.auto_fgdn    = false;
+            LLAMA_LOG_WARN("%s: disabling fused Gated Delta Net on Vulkan/macOS AMD due to known MoltenVK correctness issues\n", __func__);
+        }
+    }
+#endif
 
     if (cparams.auto_fgdn) {
         LLAMA_LOG_INFO("%s: resolving fused Gated Delta Net support:\n", __func__);
