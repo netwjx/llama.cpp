@@ -351,10 +351,20 @@ void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, 
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     @autoreleasepool {
         id<MTLDevice> device = ggml_metal_device_get_obj(ctx->dev);
-        id<MTLBuffer> buf_dst = [device newBufferWithBytesNoCopy:data
-                                                          length:size
-                                                         options:MTLResourceStorageModeShared
-                                                     deallocator:nil];
+        const bool force_staging_copy = !ggml_metal_device_get_props(ctx->dev)->has_unified_memory;
+        id<MTLBuffer> buf_dst = nil;
+        if (!force_staging_copy) {
+            buf_dst = [device newBufferWithBytesNoCopy:data
+                                                length:size
+                                               options:MTLResourceStorageModeShared
+                                           deallocator:nil];
+        }
+
+        const bool needs_staging_copy = force_staging_copy || (buf_dst == nil);
+        if (needs_staging_copy) {
+            buf_dst = [device newBufferWithLength:size
+                                          options:MTLResourceStorageModeShared];
+        }
 
         GGML_ASSERT(buf_dst);
 
@@ -378,6 +388,17 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
                            size:size];
 
         [encoder endEncoding];
+
+        if (needs_staging_copy) {
+            void * dst_ptr = data;
+            id<MTLBuffer> buf_staging = [buf_dst retain];
+            [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                GGML_UNUSED(cb);
+                memcpy(dst_ptr, [buf_staging contents], size);
+                [buf_staging release];
+            }];
+        }
+
         [cmd_buf commit];
         [buf_dst release];
 
